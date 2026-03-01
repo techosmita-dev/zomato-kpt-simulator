@@ -4,15 +4,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
-st.title("KPT Bias Simulation")
+# st.title("KPT Bias Simulation")
 
-noise_ratio = st.slider("Noisy Merchant %", 0.0, 1.0, 0.4)
+# noise_ratio = st.slider("Noisy Merchant %", 0.0, 1.0, 0.4)
 
-st.write("Simulation running...")
+# st.write("Simulation running...")
 
-# (Your simulation code here)
+# # (Your simulation code here)
 
-st.success("Deployment works!")
+# st.success("Deployment works!")
 
 def generate_merchants(n_merchants, noise_ratio):
     merchants = pd.DataFrame({
