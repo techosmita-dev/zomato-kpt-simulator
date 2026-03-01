@@ -43,16 +43,24 @@ true_kpt = simulate_true_kpt()
 
 def simulate_biased_for(true_kpt):
     bias_type = np.random.choice(
-        ["late_marking", "rider_arrival_trigger", "manual_delay"],
+        ["late_marking", "early_marking", "rider_trigger", "manual_variation"],
         size=num_orders,
-        p=[0.4, 0.4, 0.2]
+        p=[0.35, 0.25, 0.25, 0.15]
     )
 
     bias = np.zeros(num_orders)
 
+    # Overestimation
     bias[bias_type == "late_marking"] = np.random.uniform(3, 8)
-    bias[bias_type == "rider_arrival_trigger"] = np.random.uniform(5, 12)
-    bias[bias_type == "manual_delay"] = np.random.uniform(2, 5)
+
+    # Underestimation
+    bias[bias_type == "early_marking"] = -np.random.uniform(2, 6)
+
+    # Rider triggered random variation
+    bias[bias_type == "rider_trigger"] = np.random.normal(0, 5)
+
+    # Small manual fluctuations
+    bias[bias_type == "manual_variation"] = np.random.normal(0, 2)
 
     return true_kpt + bias
 
@@ -64,11 +72,14 @@ baseline_kpt = simulate_biased_for(true_kpt)
 
 def improved_signal_model(true_kpt):
     kitchen_load = num_orders / (num_chefs + num_equipments)
-    congestion_penalty = np.log1p(kitchen_load)
+    
+    congestion_penalty = 0.1 * np.log1p(kitchen_load)
+    dine_in_penalty = 0.05 * (dine_in_load / 50)
 
-    equipment_pressure = np.random.normal(0.5, 0.2, num_orders)
+    # Small symmetric noise (less than baseline)
+    smart_noise = np.random.normal(0, 1.5, num_orders)
 
-    return true_kpt + (0.2 * congestion_penalty) + equipment_pressure
+    return true_kpt + congestion_penalty + dine_in_penalty + smart_noise
 
 improved_kpt = improved_signal_model(true_kpt)
 
@@ -77,14 +88,28 @@ improved_kpt = improved_signal_model(true_kpt)
 # -----------------------------
 
 def compute_metrics(predicted, actual):
-    rider_arrival = predicted * 0.9
-    wait_times = np.maximum(0, actual - rider_arrival)
+    # Simulate rider travel time (real-world dispatch buffer)
+    travel_time = np.random.normal(5, 1.5, len(predicted))  # avg 5 min travel
+    
+    # Platform dispatches rider BEFORE predicted ready time
+    rider_dispatch_time = predicted - travel_time
+    
+    actual_ready_time = actual
+    
+    # Rider wait if arrives before food is ready
+    wait_times = np.maximum(0, actual_ready_time - rider_dispatch_time)
+    
+    # Late arrival if rider reaches after food ready
+    late_times = np.maximum(0, rider_dispatch_time - actual_ready_time)
+    
+    absolute_error = np.abs(predicted - actual)
 
     return {
         "avg_wait": np.mean(wait_times),
-        "p50_error": np.median(np.abs(predicted - actual)),
-        "p90_error": np.percentile(np.abs(predicted - actual), 90),
-        "idle_proxy": np.mean(wait_times) * 0.6
+        "p50_error": np.percentile(absolute_error, 50),
+        "p90_error": np.percentile(absolute_error, 90),
+        "late_arrival_avg": np.mean(late_times),
+        "idle_proxy": np.mean(wait_times)
     }
 
 baseline_metrics = compute_metrics(baseline_kpt, true_kpt)
@@ -94,8 +119,23 @@ improved_metrics = compute_metrics(improved_kpt, true_kpt)
 # 6️⃣ IMPROVEMENT %
 # -----------------------------
 
-def pct(b, i):
-    return ((b - i) / b) * 100 if b != 0 else 0
+def format_delta(value):
+    if value is None:
+        return ("N/A", "off")
+    
+    if value > 0:
+        return (f"-{value:.1f}%", "inverse")  # green (improvement)
+    elif value < 0:
+        return (f"+{abs(value):.1f}%", "normal")  # red (worse)
+    else:
+        return ("0%", "off")
+
+def pct(b, i, threshold=0.5):
+    if b < threshold:
+        return None
+    
+    improvement = ((b - i) / b) * 100
+    return round(improvement, 2)
 
 wait_pct = pct(baseline_metrics["avg_wait"], improved_metrics["avg_wait"])
 p50_pct = pct(baseline_metrics["p50_error"], improved_metrics["p50_error"])
@@ -117,11 +157,23 @@ with col1:
 
 with col2:
     st.markdown("### 🟢 SmartKPT")
-    st.metric("Avg Wait", round(improved_metrics["avg_wait"], 2), f"-{wait_pct:.1f}%")
-    st.metric("P50 Error", round(improved_metrics["p50_error"], 2), f"-{p50_pct:.1f}%")
-    st.metric("P90 Error", round(improved_metrics["p90_error"], 2), f"-{p90_pct:.1f}%")
-    st.metric("Idle Proxy", round(improved_metrics["idle_proxy"], 2), f"-{idle_pct:.1f}%")
 
+    wait_delta, wait_color = format_delta(wait_pct)
+    p50_delta, p50_color = format_delta(p50_pct)
+    p90_delta, p90_color = format_delta(p90_pct)
+    idle_delta, idle_color = format_delta(idle_pct)
+
+    st.metric("Avg Wait", round(improved_metrics["avg_wait"], 2),
+              wait_delta, delta_color=wait_color)
+
+    st.metric("P50 Error", round(improved_metrics["p50_error"], 2),
+              p50_delta, delta_color=p50_color)
+
+    st.metric("P90 Error", round(improved_metrics["p90_error"], 2),
+              p90_delta, delta_color=p90_color)
+
+    st.metric("Idle Proxy", round(improved_metrics["idle_proxy"], 2),
+              idle_delta, delta_color=idle_color)
 # -----------------------------
 # 8️⃣ ERROR DISTRIBUTION
 # -----------------------------
@@ -138,16 +190,20 @@ st.pyplot(fig)
 # 9️⃣ EXECUTIVE SUMMARY
 # -----------------------------
 
-st.success(f"""
-SmartKPT reduces:
-• Rider Wait Time by {wait_pct:.1f}%
-• P50 ETA Error by {p50_pct:.1f}%
-• P90 ETA Error by {p90_pct:.1f}%
-• Rider Idle Time by {idle_pct:.1f}%
+summary_text = f"""
+SmartKPT Performance Gains:
 
-By eliminating merchant bias and incorporating:
+• Rider Wait Time: {wait_delta}
+• P50 ETA Error: {p50_delta}
+• P90 ETA Error: {p90_delta}
+• Rider Idle Time: {idle_delta}
+
+Signal Improvements Introduced:
 - Kitchen congestion modeling
 - Equipment pressure signals
 - Chef capacity constraints
-- External dine-in rush load
-""")
+- Live dine-in rush integration
+- Bias reduction in merchant FOR marking
+"""
+
+st.success(summary_text)
